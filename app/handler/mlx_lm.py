@@ -104,6 +104,37 @@ class MLXLMHandler:
             total_text = " ".join([msg.get("content", "") for msg in messages if isinstance(msg.get("content"), str)])
             return self._count_tokens(total_text)
 
+    def _validate_context_window(self, prompt_tokens: int, request_id: Optional[str] = None):
+        """
+        Validate that the prompt tokens don't exceed the model's context length.
+
+        Args:
+            prompt_tokens: Number of tokens in the prompt
+            request_id: Request ID for error tracking
+
+        Raises:
+            HTTPException: If prompt exceeds context length
+        """
+        context_length = self.model.max_kv_size
+        if prompt_tokens > context_length:
+            error_msg = (
+                f"This model's maximum context length is {context_length} tokens. "
+                f"However, your messages resulted in {prompt_tokens} tokens. "
+                f"Please reduce the length of the messages."
+            )
+            content = create_error_response(
+                error_msg,
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+                param="messages",
+                request_id=request_id
+            )
+            logger.warning(
+                f"Request rejected: prompt tokens ({prompt_tokens}) exceed context length ({context_length}) "
+                f"[request_id={request_id}]"
+            )
+            raise HTTPException(status_code=400, detail=content)
+
     def _extract_model_metadata(self) -> Dict[str, Any]:
         """
         Extract metadata from the loaded MLX model.
@@ -172,18 +203,19 @@ class MLXLMHandler:
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
-    async def generate_text_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+    async def generate_text_stream(self, request: ChatCompletionRequest, request_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response for text-only chat completion requests.
         Uses the request queue for handling concurrent requests.
 
         Args:
             request: ChatCompletionRequest object containing the messages.
+            request_id: Request ID for tracking (optional).
 
         Yields:
             str or dict: Response chunks (str) followed by usage info (dict) at the end.
         """
-        request_id = f"text-{uuid.uuid4()}"
+        queue_request_id = f"text-{uuid.uuid4()}"
 
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
@@ -192,12 +224,15 @@ class MLXLMHandler:
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
             prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
 
+            # Validate context window (Phase 03)
+            self._validate_context_window(prompt_tokens, request_id)
+
             request_data = {
                 "messages": chat_messages,
                 "stream": True,
                 **model_params
             }
-            response_generator = await self.request_queue.submit(request_id, request_data)
+            response_generator = await self.request_queue.submit(queue_request_id, request_data)
             # Create appropriate parsers for this model type
 
             thinking_parser, tool_parser = self._create_parsers()
@@ -266,25 +301,29 @@ class MLXLMHandler:
 
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS, request_id=request_id)
             raise HTTPException(status_code=429, detail=content)
+        except HTTPException:
+            # Re-raise HTTPExceptions (like context window validation errors) without wrapping
+            raise
         except Exception as e:
-            logger.error(f"Error in text stream generation for request {request_id}: {str(e)}")
-            content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            logger.error(f"Error in text stream generation for request {queue_request_id}: {str(e)}")
+            content = create_error_response(f"Failed to generate text stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR, request_id=request_id)
             raise HTTPException(status_code=500, detail=content)
 
-    async def generate_text_response(self, request: ChatCompletionRequest) -> Dict[str, Any]:
+    async def generate_text_response(self, request: ChatCompletionRequest, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate a complete response for text-only chat completion requests.
         Uses the request queue for handling concurrent requests.
 
         Args:
             request: ChatCompletionRequest object containing the messages.
+            request_id: Request ID for tracking (optional).
 
         Returns:
             dict: Response content and usage info.
         """
-        request_id = f"text-{uuid.uuid4()}"
+        queue_request_id = f"text-{uuid.uuid4()}"
 
         try:
             chat_messages, model_params = await self._prepare_text_request(request)
@@ -293,12 +332,15 @@ class MLXLMHandler:
             chat_template_kwargs = model_params.get("chat_template_kwargs", {})
             prompt_tokens = self._count_message_tokens(chat_messages, **chat_template_kwargs)
 
+            # Validate context window (Phase 03)
+            self._validate_context_window(prompt_tokens, request_id)
+
             request_data = {
                 "messages": chat_messages,
                 "stream": False,
                 **model_params
             }
-            response = await self.request_queue.submit(request_id, request_data)
+            response = await self.request_queue.submit(queue_request_id, request_data)
 
             # Count completion tokens
             completion_tokens = self._count_tokens(response if isinstance(response, str) else response.get("content", ""))
@@ -354,11 +396,14 @@ class MLXLMHandler:
                         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS, request_id=request_id)
             raise HTTPException(status_code=429, detail=content)
+        except HTTPException:
+            # Re-raise HTTPExceptions (like context window validation errors) without wrapping
+            raise
         except Exception as e:
             logger.error(f"Error in text response generation: {str(e)}")
-            content = create_error_response(f"Failed to generate text response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            content = create_error_response(f"Failed to generate text response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR, request_id=request_id)
             raise HTTPException(status_code=500, detail=content)
         
     async def generate_embeddings_response(self, request: EmbeddingRequest):
