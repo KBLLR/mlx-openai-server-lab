@@ -203,6 +203,59 @@ class MLXLMHandler:
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
+        # KV cache warmup (Phase 03)
+        warmup_enabled = queue_config.get("warmup_enabled", True)
+        if warmup_enabled:
+            await self._warmup_kv_cache()
+
+    async def _warmup_kv_cache(self):
+        """
+        Warm up the KV cache by running a single forward pass with a dummy prompt.
+        This reduces first-token latency for the first real request.
+        """
+        import mlx.core as mx
+
+        try:
+            warmup_start = time.time()
+
+            # Create a simple dummy prompt
+            dummy_messages = [{"role": "user", "content": "Hello"}]
+
+            # Tokenize the dummy prompt
+            try:
+                input_tokens = self.model.tokenizer.apply_chat_template(
+                    dummy_messages,
+                    add_generation_prompt=True
+                )
+            except Exception:
+                # Fallback to simple tokenization if chat template fails
+                input_tokens = self.model.tokenizer.encode("Hello", add_special_tokens=True)
+
+            # Run a single forward pass through the model
+            # This initializes weights and allocates memory
+            input_array = mx.array(input_tokens)
+            _ = self.model.model(input_array[None])  # Add batch dimension
+            mx.eval(_)  # Force evaluation
+
+            # Clean up
+            del input_array, _
+            mx.clear_cache()
+            gc.collect()
+
+            warmup_duration_ms = (time.time() - warmup_start) * 1000
+
+            # Log success or warning based on duration
+            if warmup_duration_ms > 5000:
+                logger.warning(
+                    f"✦ KV cache warmup took {warmup_duration_ms:.0f} ms (exceeds 5s threshold)"
+                )
+            else:
+                logger.info(f"✦ KV cache warmup completed in {warmup_duration_ms:.0f} ms")
+
+        except Exception as e:
+            # Don't fail startup if warmup fails - just log and continue
+            logger.warning(f"KV cache warmup failed: {str(e)}. Continuing without warmup.")
+
     async def generate_text_stream(self, request: ChatCompletionRequest, request_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """
         Generate a streaming response for text-only chat completion requests.
