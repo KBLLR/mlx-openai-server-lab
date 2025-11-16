@@ -25,10 +25,10 @@ from app.version import __version__
 def configure_logging(log_file=None, no_log_file=False, log_level="INFO"):
     """Configure loguru logging based on CLI parameters."""
     logger.remove()  # Remove default handler
-    
+
     # Add console handler
     logger.add(
-        lambda msg: print(msg), 
+        lambda msg: print(msg),
         level=log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
                "<level>{level: <8}</level> | "
@@ -36,7 +36,7 @@ def configure_logging(log_file=None, no_log_file=False, log_level="INFO"):
                "✦ <level>{message}</level>",
         colorize=True
     )
-    
+
     # Add file handler if not disabled
     if not no_log_file:
         file_path = log_file if log_file else "logs/app.log"
@@ -49,6 +49,10 @@ def configure_logging(log_file=None, no_log_file=False, log_level="INFO"):
         )
 
 # Logging will be configured when constructing the FastAPI app.
+
+def _str_to_bool(value: str) -> bool:
+    """Convert string to boolean."""
+    return value.lower() in {"1", "true", "yes", "on"}
 
 def parse_args(argv: Optional[Iterable[str]] = None):
     parser = argparse.ArgumentParser(description="MLX OpenAI Compatible Server")
@@ -72,11 +76,8 @@ def parse_args(argv: Optional[Iterable[str]] = None):
     parser.add_argument("--tool-call-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify tool call parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     parser.add_argument("--reasoning-parser", type=str, default=None, choices=["qwen3", "glm4_moe", "qwen3_moe", "qwen3_next", "qwen3_vl", "harmony", "minimax"], help="Specify reasoning parser to use instead of auto-detection. Only works with language models (`lm` or `multimodal` model types). Available options: `qwen3`, `glm4_moe`, `qwen3_moe`, `qwen3_next`, `qwen3_vl`, `harmony`, `minimax`.")
     parser.add_argument("--trust-remote-code", action="store_true", help="Enable trust_remote_code when loading models. This allows loading custom code from model repositories.")
+    parser.add_argument("--mlx-warmup", type=_str_to_bool, default=True, help="Enable KV cache warmup at startup to reduce first-token latency (default: enabled).")
     return parser.parse_args(argv)
-
-
-def _str_to_bool(value: str) -> bool:
-    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def args_from_env() -> argparse.Namespace:
@@ -103,6 +104,7 @@ def args_from_env() -> argparse.Namespace:
         "TOOL_CALL_PARSER": ("tool_call_parser", str),
         "REASONING_PARSER": ("reasoning_parser", str),
         "TRUST_REMOTE_CODE": ("trust_remote_code", _str_to_bool),
+        "MLX_WARMUP": ("mlx_warmup", _str_to_bool),
     }
     for env_var, (attr, caster) in env_map.items():
         raw_value = os.getenv(env_var)
@@ -187,12 +189,16 @@ def create_lifespan(config_args):
                     reasoning_parser=getattr(config_args, 'reasoning_parser', None),
                     trust_remote_code=getattr(config_args, 'trust_remote_code', False)
                 )       
-            # Initialize queue
-            await handler.initialize({
+            # Initialize queue (and warmup for LM/VLM models)
+            init_config = {
                 "max_concurrency": config_args.max_concurrency,
                 "timeout": config_args.queue_timeout,
                 "queue_size": config_args.queue_size
-            })
+            }
+            # Add warmup config for language models
+            if config_args.model_type in ["lm", "multimodal"]:
+                init_config["warmup_enabled"] = getattr(config_args, 'mlx_warmup', True)
+            await handler.initialize(init_config)
 
             # Log detailed initialization info (Phase 02 observability)
             logger.info("MLX handler initialized successfully")
