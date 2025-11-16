@@ -62,6 +62,9 @@ class HealthCheckResponse(OpenAIBaseModel):
     status: HealthCheckStatus = Field(..., description="The status of the health check.")
     model_id: Optional[str] = Field(None, description="ID of the loaded model, if any.")
     model_status: Optional[str] = Field(None, description="Status of the model handler (initialized/uninitialized).")
+    models_healthy: bool = Field(True, description="Whether all models are healthy and ready.")
+    warmup_enabled: Optional[bool] = Field(None, description="Whether KV cache warmup is enabled.")
+    warmup_completed: Optional[bool] = Field(None, description="Whether warmup has completed successfully.")
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = Field("error", description="The object type, always 'error'.")
@@ -310,12 +313,17 @@ class EmbeddingResponse(OpenAIBaseModel):
 
 class Model(OpenAIBaseModel):
     """
-    Represents a model in the models list response.
+    Represents a model in the models list response with rich metadata for Tier 2 discovery.
     """
     id: str = Field(..., description="The model ID.")
     object: str = Field("model", description="The object type, always 'model'.")
     created: int = Field(..., description="The creation timestamp.")
-    owned_by: str = Field("openai", description="The owner of the model.")
+    owned_by: str = Field("local-mlx", description="The owner of the model.")
+    description: Optional[str] = Field(None, description="Human-readable model description.")
+    context_length: Optional[int] = Field(None, description="Maximum context length for language models.")
+    family: Optional[str] = Field(None, description="Model family (e.g., gemma, llama, qwen).")
+    tags: Optional[List[str]] = Field(None, description="Tags for categorization.")
+    tier: Optional[str] = Field(None, description="Service tier identifier.")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional model metadata.")
 
 class ModelsResponse(OpenAIBaseModel):

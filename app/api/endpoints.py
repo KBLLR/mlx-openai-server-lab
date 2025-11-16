@@ -34,10 +34,12 @@ router = APIRouter()
 @router.get("/health")
 async def health(raw_request: Request):
     """
-    Health check endpoint - verifies handler initialization status.
+    Health check endpoint - verifies handler and model initialization status.
     Returns 503 if handler is not initialized, 200 otherwise.
+    Includes warmup status for Tier 2 health gating.
     """
     handler = getattr(raw_request.app.state, 'handler', None)
+    config = getattr(raw_request.app.state, 'config', None)
 
     if handler is None:
         # Handler not initialized - return 503 with degraded status
@@ -46,23 +48,40 @@ async def health(raw_request: Request):
             content={
                 "status": "ok",
                 "model_id": None,
-                "model_status": "uninitialized"
+                "model_status": "uninitialized",
+                "models_healthy": False,
+                "warmup_enabled": None,
+                "warmup_completed": None
             }
         )
 
-    # Handler initialized - extract model_id
+    # Handler initialized - extract model_id and warmup status
     model_id = getattr(handler, 'model_path', 'unknown')
+
+    # Check warmup configuration
+    warmup_enabled = None
+    warmup_completed = None
+    if config and hasattr(config, 'model_type') and config.model_type in ['lm', 'multimodal']:
+        warmup_enabled = getattr(config, 'mlx_warmup', True)
+        # Check if warmup was performed by looking for warmup_done attribute on handler
+        warmup_completed = getattr(handler, 'warmup_done', warmup_enabled)
+
+    # Determine if model is healthy
+    models_healthy = model_id is not None and model_id != 'unknown'
 
     return HealthCheckResponse(
         status=HealthCheckStatus.OK,
         model_id=model_id,
-        model_status="initialized"
+        model_status="initialized",
+        models_healthy=models_healthy,
+        warmup_enabled=warmup_enabled,
+        warmup_completed=warmup_completed
     )
 
 @router.get("/v1/models")
 async def models(raw_request: Request):
     """
-    Get list of available models with cached response for instant delivery.
+    Get list of available models with rich metadata for Tier 2 dynamic discovery.
     This endpoint is defined early to ensure it's not blocked by other routes.
     """
     # Try registry first (Phase 1+), fall back to handler for backward compat
@@ -86,6 +105,44 @@ async def models(raw_request: Request):
     except Exception as e:
         logger.error(f"Error retrieving models: {str(e)}")
         return JSONResponse(content=create_error_response(f"Failed to retrieve models: {str(e)}", "server_error", 500), status_code=500)
+
+@router.get("/v1/models/{model_id:path}")
+async def get_model(model_id: str, raw_request: Request):
+    """
+    Get detailed information about a specific model.
+    Supports Tier 2 model discovery and validation.
+    """
+    registry = getattr(raw_request.app.state, 'registry', None)
+    if registry is None:
+        return JSONResponse(
+            content=create_error_response("Model registry not initialized", "service_unavailable", 503),
+            status_code=503
+        )
+
+    try:
+        metadata = registry.get_metadata(model_id)
+        return Model(
+            id=metadata.id,
+            object=metadata.object,
+            created=metadata.created_at,
+            owned_by=metadata.owned_by,
+            description=metadata.description,
+            context_length=metadata.context_length,
+            family=metadata.family,
+            tags=metadata.tags,
+            tier=metadata.tier,
+        )
+    except KeyError:
+        return JSONResponse(
+            content=create_error_response(f"Model '{model_id}' not found", "model_not_found", 404),
+            status_code=404
+        )
+    except Exception as e:
+        logger.error(f"Error retrieving model {model_id}: {str(e)}")
+        return JSONResponse(
+            content=create_error_response(f"Failed to retrieve model: {str(e)}", "server_error", 500),
+            status_code=500
+        )
 
 @router.get("/v1/queue/stats")
 async def queue_stats(raw_request: Request):

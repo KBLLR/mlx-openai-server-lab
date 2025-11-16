@@ -43,6 +43,9 @@ This repository hosts a high-performance API server that provides OpenAI-compati
 - 🎛️ **LoRA adapter support** for fine-tuned image generation
 - ⚡ **Configurable quantization** (4-bit, 8-bit, 16-bit) for optimal performance
 - 🧠 **Customizable context length** for memory optimization and performance tuning
+- 🔍 **Rich model discovery** with metadata for dynamic integration (Tier 2-ready)
+- 📊 **Request tracking** with `X-Request-ID` propagation and latency observability
+- ⚡ **KV cache warmup** for reduced first-token latency
 
 ---
 
@@ -90,6 +93,82 @@ This server implements the OpenAI API interface, allowing you to use it as a dro
 - Function calling and tool use
 - Standard OpenAI request/response formats
 - Common OpenAI parameters (temperature, top_p, etc.)
+
+## Tier 2 Integration (MLX-First Stack)
+
+This server acts as **Tier 3A** in the MLX-first stack, providing local OpenAI-compatible LLM endpoints with rich metadata for dynamic discovery by higher-tier services like `gen-idea-lab` (Tier 2).
+
+### Key Integration Features
+
+#### 🔍 Rich Model Discovery
+The `/v1/models` endpoint returns comprehensive metadata for each model:
+- Model ID, family, and description
+- Context length and capabilities
+- Tags for categorization (e.g., `["local", "chat", "quantized"]`)
+- Service tier identifier (`"3A"`)
+
+Example:
+```bash
+curl http://localhost:8000/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [{
+    "id": "mlx-community/gemma-3-4b-it-4bit",
+    "family": "gemma",
+    "description": "Gemma language model running on MLX",
+    "context_length": 8192,
+    "tags": ["local", "chat", "quantized"],
+    "tier": "3A"
+  }]
+}
+```
+
+#### 📊 Request ID Propagation
+Support for `X-Request-ID` header enables end-to-end request tracking:
+```bash
+curl -H "X-Request-ID: tier2-abc123" \
+  http://localhost:8000/v1/chat/completions \
+  -d '{"model": "gemma", "messages": [...]}'
+```
+
+Logs include request ID and latency:
+```
+Request completed: POST /v1/chat/completions status=200 duration=0.234s [request_id=tier2-abc123]
+```
+
+#### ⚡ Health Check with Warmup Status
+The `/health` endpoint provides detailed readiness information:
+```json
+{
+  "status": "ok",
+  "model_id": "mlx-community/gemma-3-4b-it-4bit",
+  "model_status": "initialized",
+  "models_healthy": true,
+  "warmup_enabled": true,
+  "warmup_completed": true
+}
+```
+
+Use this for health gating in Tier 2 services before sending requests.
+
+#### ⚙️ KV Cache Warmup
+Reduce first-token latency with configurable warmup:
+```bash
+python -m app.main \
+  --model-path mlx-community/gemma-3-4b-it-4bit \
+  --model-type lm \
+  --mlx-warmup true  # default: enabled
+```
+
+Or via environment:
+```bash
+export MLX_WARMUP=true
+```
+
+📖 **[Full Tier 2 Integration Guide →](docs/TIER2_INTEGRATION.md)**
 
 ## Supported Model Types
 
