@@ -79,16 +79,97 @@ class MLXVLMHandler:
         """
         Create appropriate parsers based on model type and available tools.
         Uses ParserFactory for centralized parser creation logic.
-        
+
         Returns:
             Tuple of (thinking_parser, tool_parser)
-        """         
+        """
         return ParserFactory.create_parsers(
             model_type=self.model_type,
             manual_reasoning_parser=self.reasoning_parser,
             manual_tool_parser=self.tool_call_parser,
         )
-    
+
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count the number of tokens in a text string.
+
+        Args:
+            text: The text to count tokens for.
+
+        Returns:
+            int: The number of tokens.
+        """
+        if not text:
+            return 0
+        tokens = self.model.processor.tokenizer.encode(text, add_special_tokens=False)
+        return len(tokens)
+
+    def _count_message_tokens(self, messages: List[Dict[str, Any]], **kwargs) -> int:
+        """
+        Count the number of tokens in a list of messages after applying chat template.
+        For multimodal models, this provides an estimate based on text content.
+
+        Args:
+            messages: List of messages to count tokens for.
+            **kwargs: Additional arguments to pass to apply_chat_template.
+
+        Returns:
+            int: The estimated number of prompt tokens.
+        """
+        try:
+            # For multimodal models, we need to use the processor's tokenizer
+            input_tokens = self.model.processor.tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                **kwargs
+            )
+            return len(input_tokens)
+        except Exception as e:
+            logger.warning(f"Failed to count message tokens: {str(e)}")
+            # Fallback: rough estimate based on text content only
+            total_text = ""
+            for msg in messages:
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    total_text += content + " "
+                elif isinstance(content, list):
+                    # Extract text from multimodal content
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            total_text += item.get("text", "") + " "
+            return self._count_tokens(total_text)
+
+    def _validate_context_window(self, prompt_tokens: int, request_id: Optional[str] = None):
+        """
+        Validate that the prompt tokens don't exceed the model's context length.
+
+        Args:
+            prompt_tokens: Number of tokens in the prompt
+            request_id: Request ID for error tracking
+
+        Raises:
+            HTTPException: If prompt exceeds context length
+        """
+        context_length = self.model.max_kv_size
+        if prompt_tokens > context_length:
+            error_msg = (
+                f"This model's maximum context length is {context_length} tokens. "
+                f"However, your messages resulted in {prompt_tokens} tokens. "
+                f"Please reduce the length of the messages."
+            )
+            content = create_error_response(
+                error_msg,
+                "invalid_request_error",
+                HTTPStatus.BAD_REQUEST,
+                param="messages",
+                request_id=request_id
+            )
+            logger.warning(
+                f"Request rejected: prompt tokens ({prompt_tokens}) exceed context length ({context_length}) "
+                f"[request_id={request_id}]"
+            )
+            raise HTTPException(status_code=400, detail=content)
+
     async def initialize(self, queue_config: Optional[Dict[str, Any]] = None):
         """Initialize the handler and start the request queue."""
         
@@ -106,25 +187,32 @@ class MLXVLMHandler:
         await self.request_queue.start(self._process_request)
         logger.info("Initialized MLXHandler and started request queue")
 
-    async def generate_multimodal_stream(self, request: ChatCompletionRequest):
+    async def generate_multimodal_stream(self, request: ChatCompletionRequest, request_id: Optional[str] = None):
         """
         Generate a streaming response for multimodal chat completion requests.
-        
+
         Args:
             request: ChatCompletionRequest object containing the messages.
-        
+            request_id: Request ID for tracking (optional).
+
         Returns:
             AsyncGenerator: Yields response chunks.
         """
-        
-        # Create a unique request ID
-        request_id = f"multimodal-{uuid.uuid4()}"
-        
+
+        # Create a unique queue request ID
+        queue_request_id = f"multimodal-{uuid.uuid4()}"
+
         try:
             request_dict = await self._prepare_multimodal_request(request)
+
+            # Count prompt tokens and validate context window (Phase 03)
+            messages = request_dict.get("messages", [])
+            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(messages, **chat_template_kwargs)
+            self._validate_context_window(prompt_tokens, request_id)
             
             # Submit to the multimodal queue and get the generator
-            response_generator = await self.request_queue.submit(request_id, request_dict)      
+            response_generator = await self.request_queue.submit(queue_request_id, request_dict)      
             
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
@@ -167,32 +255,41 @@ class MLXVLMHandler:
         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS, request_id=request_id)
             raise HTTPException(status_code=429, detail=content)
-
+        except HTTPException:
+            # Re-raise HTTPExceptions (like context window validation errors) without wrapping
+            raise
         except Exception as e:
-            logger.error(f"Error in multimodal stream generation for request {request_id}: {str(e)}")
-            content = create_error_response(f"Failed to generate multimodal stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            logger.error(f"Error in multimodal stream generation for request {queue_request_id}: {str(e)}")
+            content = create_error_response(f"Failed to generate multimodal stream: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR, request_id=request_id)
             raise HTTPException(status_code=500, detail=content)
 
-    async def generate_multimodal_response(self, request: ChatCompletionRequest):
+    async def generate_multimodal_response(self, request: ChatCompletionRequest, request_id: Optional[str] = None):
         """
         Generate a complete response for multimodal chat completion requests.
         Uses the request queue for handling concurrent requests.
-        
+
         Args:
             request: ChatCompletionRequest object containing the messages.
-        
+            request_id: Request ID for tracking (optional).
+
         Returns:
             str: Complete response.
         """
         try:
-            # Create a unique request ID
-            request_id = f"multimodal-{uuid.uuid4()}"
-            
+            # Create a unique queue request ID
+            queue_request_id = f"multimodal-{uuid.uuid4()}"
+
             request_dict = await self._prepare_multimodal_request(request)
-        
-            response = await self.request_queue.submit(request_id, request_dict)
+
+            # Count prompt tokens and validate context window (Phase 03)
+            messages = request_dict.get("messages", [])
+            chat_template_kwargs = request_dict.get("chat_template_kwargs", {})
+            prompt_tokens = self._count_message_tokens(messages, **chat_template_kwargs)
+            self._validate_context_window(prompt_tokens, request_id)
+
+            response = await self.request_queue.submit(queue_request_id, request_dict)
                         
             # Create appropriate parsers for this model type
             thinking_parser, tool_parser = self._create_parsers()
@@ -222,11 +319,14 @@ class MLXVLMHandler:
                         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
-            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS)
+            content = create_error_response("Too many requests. Service is at capacity.", "rate_limit_exceeded", HTTPStatus.TOO_MANY_REQUESTS, request_id=request_id)
             raise HTTPException(status_code=429, detail=content)
+        except HTTPException:
+            # Re-raise HTTPExceptions (like context window validation errors) without wrapping
+            raise
         except Exception as e:
             logger.error(f"Error in multimodal response generation: {str(e)}")
-            content = create_error_response(f"Failed to generate multimodal response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR)
+            content = create_error_response(f"Failed to generate multimodal response: {str(e)}", "server_error", HTTPStatus.INTERNAL_SERVER_ERROR, request_id=request_id)
             raise HTTPException(status_code=500, detail=content)
         
     async def generate_embeddings_response(self, request: EmbeddingRequest):

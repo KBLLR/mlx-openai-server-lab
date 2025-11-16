@@ -404,11 +404,11 @@ async def process_multimodal_request(handler, request: ChatCompletionRequest, re
 
     if request.stream:
         return StreamingResponse(
-            handle_stream_response(handler.generate_multimodal_stream(request), request.model, request_id),
+            handle_stream_response(handler.generate_multimodal_stream(request, request_id), request.model, request_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         )
-    return format_final_response(await handler.generate_multimodal_response(request), request.model, request_id)
+    return format_final_response(await handler.generate_multimodal_response(request, request_id), request.model, request_id)
 
 async def process_text_request(handler, request: ChatCompletionRequest, request_id: str = None):
     """Process text-only requests."""
@@ -417,13 +417,13 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
 
     if request.stream:
         return StreamingResponse(
-            handle_stream_response(handler.generate_text_stream(request), request.model, request_id),
+            handle_stream_response(handler.generate_text_stream(request, request_id), request.model, request_id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
         )
 
     # Extract response and usage from handler
-    result = await handler.generate_text_response(request)
+    result = await handler.generate_text_response(request, request_id)
     response_data = result.get("response")
     usage = result.get("usage")
     return format_final_response(response_data, request.model, request_id, usage)
