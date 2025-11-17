@@ -471,7 +471,303 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 
 ---
 
-## Session 3: TBD
+## Session 3: Phase-4 Foundation & Architecture
+**Date**: 2025-11-17
+**Branch**: `claude/phase-4-orchestration-rag-01UnMGMkSDJHRhM4BnxAxQFQ`
+**Goal**: Implement Phase-4 foundation with architecture documentation and enhanced multi-model registry
+
+### Discoveries
+
+**Phase-4 Implementation Scope:**
+- Phase-4 requires 7 major components: Architecture, Multi-model Registry, State Management, Fusion, RAG, MCP, Observability
+- Current codebase is ready for Phase-4 (readiness score: 5/10 from Session 2 snapshot)
+- Single-model limitation in registry is the primary blocker for fusion orchestration
+
+**Architecture Decisions:**
+- **VRAM Management**: LRU eviction policy with configurable limits (default: 32GB)
+- **Model Capabilities**: Automatic capability discovery based on model type (chat, vision, embeddings, etc.)
+- **State Persistence**: MongoDB for job tracking, Redis for persistent queue
+- **Vector Database**: ChromaDB as default (with FAISS and MLX-native as future options)
+- **Workflow Engine**: Template-based workflow composition with variable interpolation
+
+**Technical Insights:**
+- Multi-model registry needs VRAM tracking to prevent OOM errors
+- LRU cache essential for intelligent model eviction
+- Capability-based routing enables automatic model selection
+- Request counting provides usage statistics for model optimization
+
+### Actions Taken
+
+1. ✅ **Created Phase-4 Architecture Document** (`docs/PHASE4_ARCHITECTURE.md`)
+   - 13 sections covering complete Phase-4 architecture
+   - Multi-model registry design with VRAM management
+   - Fusion orchestration layer specification
+   - RAG provider architecture with ChromaDB integration
+   - MCP server layer with job tracking and webhooks
+   - State management schema (MongoDB collections)
+   - Request flows, deployment architecture, security considerations
+   - Performance benchmarks and future enhancements roadmap
+
+2. ✅ **Created Phase-4 API Specification** (`docs/PHASE4_API_SPEC.md`)
+   - Complete API specification for all Phase-4 services
+   - Model Management API: load/unload models, get stats, warmup
+   - Fusion Orchestration API: execute workflows, list workflows, capability discovery, compose custom workflows
+   - RAG Provider API: ingest documents, RAG query, manage collections
+   - MCP Server API: submit jobs, get job status, list jobs, cancel jobs, manage webhooks
+   - Observability API: Prometheus metrics, system diagnostics, enhanced health checks
+   - Error handling, rate limiting, versioning policies
+
+3. ✅ **Created Schema Definitions**
+   - `app/schemas/fusion.py`: Fusion workflow schemas (WorkflowStep, FusionRequest, FusionResult, ModelCapabilities)
+   - `app/schemas/mcp.py`: MCP schemas (JobStatus, JobCreate, Job, Webhook, WebhookPayload)
+   - `app/schemas/rag.py`: RAG schemas (DocumentChunk, RAGQueryRequest, RAGResult, RAGCollection)
+
+4. ✅ **Implemented VRAM Tracking** (`app/core/vram_tracker.py`)
+   - Track VRAM usage per model with configurable global limit
+   - Register/unregister models with VRAM validation
+   - Check if model can fit before loading
+   - Get usage summaries (total, available, usage percentage)
+   - Thread-safe async operations
+
+5. ✅ **Implemented LRU Model Cache** (`app/core/lru_cache.py`)
+   - Track model access times using OrderedDict
+   - Get least recently used model for eviction
+   - Get N least recently used models
+   - Update access time on model use
+   - Thread-safe async operations
+
+6. ✅ **Enhanced Multi-Model Registry** (`app/core/model_registry.py`)
+   - **Breaking Change**: Removed single-model limitation
+   - Added VRAM tracking integration with automatic eviction
+   - Added LRU cache for intelligent model eviction policy
+   - Added capability-based model discovery (`get_models_by_capability`)
+   - Added model usage statistics (`get_model_stats`, request counting)
+   - Added VRAM usage summary (`get_vram_usage_summary`)
+   - Enhanced `register_model` with VRAM checking and auto-eviction
+   - Enhanced `unregister_model` with VRAM cleanup
+   - Enhanced `get_handler` with LRU cache updates and request counting
+   - Configurable max models and max VRAM limits
+
+7. ✅ **Updated Core Module Exports** (`app/core/__init__.py`)
+   - Added VRAMTracker and LRUModelCache to exports
+
+8. ✅ **Committed and Pushed Changes**
+   - Commit: "feat(phase-4): Add architecture docs and enhance multi-model registry"
+   - 9 files changed, 3337 insertions
+   - Pushed to `claude/phase-4-orchestration-rag-01UnMGMkSDJHRhM4BnxAxQFQ`
+
+### Next Actions for Phase-4 Completion
+
+**CRITICAL (Must Complete for Minimum Viable Phase-4):**
+
+#### 1. State Management Infrastructure (Week 1-2)
+- [ ] **Create State Manager** (`app/core/state_manager.py`)
+  - MongoDB client integration (motor)
+  - Job CRUD operations (create, get, update, list)
+  - Webhook CRUD operations
+  - RAG collection metadata storage
+  - TTL-based job cleanup (default: 7 days)
+
+- [ ] **Create Persistent Queue** (`app/core/persistent_queue.py`)
+  - Redis-backed queue for crash recovery
+  - Queue operations: enqueue, dequeue, peek, size
+  - Priority queue support (low, normal, high)
+  - Job recovery on server restart
+
+- [ ] **Create Job Tracker** (`app/core/job_tracker.py`)
+  - Job lifecycle management (queued → processing → completed/failed)
+  - Job status transitions with validation
+  - Webhook triggering on job events
+  - Background worker for job processing
+
+#### 2. Fusion Orchestration Layer (Week 2-3)
+- [ ] **Implement Fusion Module** (`app/fusion/`)
+  - `coordinator.py`: Main orchestration coordinator
+  - `router.py`: Model routing logic (capability-based, load-based, quality-based)
+  - `workflows.py`: Predefined workflow templates (rag_with_rerank, multimodal_analysis, sequential_summarization)
+  - `capabilities.py`: Model capability discovery
+  - `__init__.py`: Module exports
+
+- [ ] **Add Fusion API Endpoints** (`app/api/fusion.py`)
+  - `POST /api/fusion/orchestrate`: Execute workflow
+  - `GET /api/fusion/workflows`: List available workflows
+  - `GET /api/fusion/capabilities`: Capability discovery
+  - `POST /api/fusion/compose`: Create custom workflow
+
+#### 3. RAG Provider Service (Week 3-4)
+- [ ] **Implement RAG Module** (`app/rag/`)
+  - `document_processor.py`: PDF/text chunking with overlap
+  - `vector_store.py`: ChromaDB wrapper with async interface
+  - `retriever.py`: Semantic search with similarity threshold
+  - `generator.py`: RAG generation with MLX models
+  - `reranker.py`: Optional reranking (future enhancement)
+  - `__init__.py`: Module exports
+
+- [ ] **Add RAG API Endpoints** (`app/api/rag.py`)
+  - `POST /api/rag/ingest`: Ingest documents (multipart/form-data)
+  - `POST /api/rag/query`: RAG query with retrieval + generation
+  - `GET /api/rag/collections`: List collections
+  - `GET /api/rag/collections/{name}`: Get collection info
+  - `DELETE /api/rag/documents/{collection}/{id}`: Delete document
+  - `DELETE /api/rag/collections/{name}`: Delete collection
+
+#### 4. MCP Server Layer (Week 4-5)
+- [ ] **Implement MCP Module** (`app/mcp/`)
+  - `protocol.py`: MCP protocol implementation
+  - `handlers.py`: Request/response handlers
+  - `state_sync.py`: Tier 2 state synchronization
+  - `webhooks.py`: Webhook management and triggering
+  - `__init__.py`: Module exports
+
+- [ ] **Add MCP API Endpoints** (`app/api/mcp.py`)
+  - `POST /api/mcp/jobs`: Submit job
+  - `GET /api/mcp/jobs/{id}`: Get job status
+  - `GET /api/mcp/jobs`: List jobs with filters
+  - `DELETE /api/mcp/jobs/{id}`: Cancel job
+  - `POST /api/mcp/webhooks`: Register webhook
+  - `GET /api/mcp/webhooks`: List webhooks
+  - `DELETE /api/mcp/webhooks/{id}`: Delete webhook
+
+#### 5. Observability & Diagnostics (Week 5-6)
+- [ ] **Add Prometheus Metrics** (`app/observability/metrics.py`)
+  - Request rate, error rate, latency histograms
+  - Queue depth, active requests, concurrency
+  - VRAM usage per model
+  - Model inference time
+
+- [ ] **Add System Diagnostics** (`app/api/diagnostics.py`)
+  - `GET /internal/diagnostics`: System health, resource usage, model stats, queue stats, job stats, RAG stats, recent errors
+  - Enhanced `/health` endpoint with Phase-4 services status
+
+#### 6. Integration & Testing (Week 6)
+- [ ] **Create Integration Tests** (`tests/`)
+  - `test_multi_model.py`: Multi-model loading, routing, eviction
+  - `test_fusion.py`: Fusion workflow execution, capability discovery
+  - `test_rag.py`: Document ingestion, retrieval, RAG generation
+  - `test_mcp.py`: Job submission, status tracking, webhooks
+  - `test_state_manager.py`: MongoDB operations, job persistence
+
+- [ ] **Add Dependencies**
+  - `motor`: MongoDB async client
+  - `redis`: Redis client
+  - `chromadb`: Vector database
+  - `prometheus-client`: Metrics export
+
+#### 7. Documentation & Deployment (Week 7)
+- [ ] **Update README.md**
+  - Phase-4 features overview
+  - Multi-model usage examples
+  - Fusion workflow examples
+  - RAG setup and usage
+  - MCP integration guide
+
+- [ ] **Create User Guides**
+  - `docs/FUSION_GUIDE.md`: Fusion orchestration user guide
+  - `docs/RAG_GUIDE.md`: RAG provider integration guide
+  - `docs/MCP_PROTOCOL.md`: MCP server protocol specification
+
+- [ ] **Add Example Notebooks**
+  - `examples/fusion_workflows.ipynb`: Fusion workflow examples
+  - `examples/rag_query.ipynb`: RAG query examples
+  - `examples/mcp_integration.ipynb`: MCP integration examples
+
+### Risks & Open Questions
+
+**Risks:**
+1. **Complexity Explosion**: Phase-4 adds significant complexity (fusion, RAG, MCP layers)
+   - *Mitigation*: Incremental implementation, start with simple workflows, comprehensive testing
+2. **VRAM Management Accuracy**: VRAM tracking estimates may not be accurate without MLX introspection
+   - *Mitigation*: Start with conservative estimates, add actual VRAM measurement later
+3. **MongoDB/Redis Dependencies**: Adds infrastructure dependencies for state persistence
+   - *Mitigation*: Make persistent state optional, fall back to in-memory for development
+4. **Performance Overhead**: Multi-model routing and state management may add latency
+   - *Mitigation*: Benchmark early, optimize hot paths, implement caching
+
+**Open Questions:**
+1. **MongoDB Schema Evolution**: How to handle schema changes across versions?
+   - *Recommendation*: Version job schema, use Pydantic for validation, add migration scripts
+2. **ChromaDB vs FAISS**: Which vector database is better for production?
+   - *Recommendation*: Start with ChromaDB (easier setup), benchmark both, make pluggable
+3. **Webhook Retry Logic**: How many retries, what backoff strategy?
+   - *Recommendation*: Exponential backoff (2s, 4s, 8s, 16s), max 3 retries, disable after 10 failures
+4. **Model Loading Priority**: Should new high-priority models evict low-priority ones?
+   - *Recommendation*: Yes, add priority-based eviction policy alongside LRU
+5. **Fusion Workflow DSL**: Should we support a custom DSL for workflows?
+   - *Recommendation*: Start with JSON-based workflow definitions, add DSL in Phase-5
+
+### Files Changed
+
+**Created:**
+- ✅ `docs/PHASE4_ARCHITECTURE.md` - Complete Phase-4 architecture design (700+ lines)
+- ✅ `docs/PHASE4_API_SPEC.md` - Comprehensive API specifications (1000+ lines)
+- ✅ `app/schemas/fusion.py` - Fusion workflow schemas
+- ✅ `app/schemas/mcp.py` - MCP job and webhook schemas
+- ✅ `app/schemas/rag.py` - RAG document and query schemas
+- ✅ `app/core/vram_tracker.py` - VRAM tracking and management
+- ✅ `app/core/lru_cache.py` - LRU cache for model eviction
+
+**Modified:**
+- ✅ `app/core/__init__.py` - Added VRAMTracker and LRUModelCache exports
+- ✅ `app/core/model_registry.py` - Enhanced with multi-model support, VRAM tracking, LRU eviction, capability discovery, usage statistics
+
+### Files to Create in Remaining Phase-4 Work
+
+**State Management:**
+- `app/core/state_manager.py` - MongoDB state management
+- `app/core/persistent_queue.py` - Redis/MongoDB-backed queue
+- `app/core/job_tracker.py` - Job lifecycle management
+
+**Fusion Layer:**
+- `app/fusion/__init__.py` - Fusion module exports
+- `app/fusion/coordinator.py` - Fusion orchestration coordinator
+- `app/fusion/router.py` - Model routing logic
+- `app/fusion/workflows.py` - Predefined workflow templates
+- `app/fusion/capabilities.py` - Capability discovery
+- `app/api/fusion.py` - Fusion API endpoints
+
+**RAG Layer:**
+- `app/rag/__init__.py` - RAG module exports
+- `app/rag/document_processor.py` - Document chunking
+- `app/rag/vector_store.py` - Vector database interface
+- `app/rag/retriever.py` - Semantic retrieval
+- `app/rag/generator.py` - RAG generation
+- `app/api/rag.py` - RAG API endpoints
+
+**MCP Layer:**
+- `app/mcp/__init__.py` - MCP module exports
+- `app/mcp/protocol.py` - MCP protocol implementation
+- `app/mcp/handlers.py` - Request handlers
+- `app/mcp/state_sync.py` - State synchronization
+- `app/mcp/webhooks.py` - Webhook management
+- `app/api/mcp.py` - MCP API endpoints
+
+**Observability:**
+- `app/observability/__init__.py` - Observability module exports
+- `app/observability/metrics.py` - Prometheus metrics
+- `app/api/diagnostics.py` - Diagnostics endpoints
+
+**Testing:**
+- `tests/test_multi_model.py` - Multi-model tests
+- `tests/test_fusion.py` - Fusion orchestration tests
+- `tests/test_rag.py` - RAG provider tests
+- `tests/test_mcp.py` - MCP protocol tests
+- `tests/test_state_manager.py` - State management tests
+
+**Documentation:**
+- `docs/FUSION_GUIDE.md` - Fusion user guide
+- `docs/RAG_GUIDE.md` - RAG integration guide
+- `docs/MCP_PROTOCOL.md` - MCP protocol specification
+- Update `README.md` - Phase-4 features overview
+- Update `docs/HANDOFFS.md` - Session 3 entry (this update)
+
+**Examples:**
+- `examples/fusion_workflows.ipynb` - Fusion workflow examples
+- `examples/rag_query.ipynb` - RAG query examples
+- `examples/mcp_integration.ipynb` - MCP integration examples
+
+---
+
+## Session 4: TBD
 **Date**: TBD
 **Branch**: TBD
 **Goal**: TBD
