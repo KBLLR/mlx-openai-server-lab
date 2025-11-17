@@ -143,6 +143,40 @@ class ModelRegistry:
 
         return tags
 
+    def _validate_handler(self, handler: Any, model_type: str) -> bool:
+        """
+        Validate that a handler is properly initialized with loaded weights.
+
+        Args:
+            handler: Handler instance to validate
+            model_type: Expected model type
+
+        Returns:
+            True if handler is valid, False otherwise
+        """
+        try:
+            # Check handler has required attributes
+            if not hasattr(handler, 'model'):
+                logger.warning("Handler missing 'model' attribute")
+                return False
+
+            # Check model is not None
+            if handler.model is None:
+                logger.warning("Handler model is None")
+                return False
+
+            # For LM/VLM models, check for model-specific attributes
+            if model_type in ["lm", "multimodal"]:
+                if hasattr(handler.model, 'model') and handler.model.model is None:
+                    logger.warning("Handler's inner model is None (corrupted weights)")
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.warning(f"Handler validation failed: {str(e)}")
+            return False
+
     async def register_model(
         self,
         model_id: str,
@@ -158,6 +192,8 @@ class ModelRegistry:
         """
         Register a model handler with metadata.
 
+        Phase-4 enhancement: Validates handler to detect corrupted weights.
+
         Args:
             model_id: Unique identifier for the model
             handler: Handler instance (MLXLMHandler, MLXVLMHandler, etc.)
@@ -170,11 +206,18 @@ class ModelRegistry:
             capabilities: Optional list of model capabilities
 
         Raises:
-            ValueError: If model_id already registered or VRAM limit exceeded
+            ValueError: If model_id already registered, VRAM limit exceeded, or handler invalid
         """
         async with self._lock:
             if model_id in self._handlers:
                 raise ValueError(f"Model '{model_id}' is already registered")
+
+            # Phase-4: Validate handler to detect corrupted weights
+            if not self._validate_handler(handler, model_type):
+                raise ValueError(
+                    f"Handler validation failed for model '{model_id}'. "
+                    "Model may have corrupted weights or failed to load properly."
+                )
 
             # Check if we need to evict models
             if self._max_models is not None and len(self._handlers) >= self._max_models:

@@ -37,12 +37,16 @@ async def health(raw_request: Request):
     Health check endpoint - verifies handler and model initialization status.
     Returns 503 if handler is not initialized, 200 otherwise.
     Includes warmup status for Tier 2 health gating.
+    Phase-4: Includes latency measurement for observability.
     """
+    start_time = time.time()
+
     handler = getattr(raw_request.app.state, 'handler', None)
     config = getattr(raw_request.app.state, 'config', None)
 
     if handler is None:
         # Handler not initialized - return 503 with degraded status
+        latency_ms = (time.time() - start_time) * 1000
         return JSONResponse(
             status_code=503,
             content={
@@ -51,7 +55,8 @@ async def health(raw_request: Request):
                 "model_status": "uninitialized",
                 "models_healthy": False,
                 "warmup_enabled": None,
-                "warmup_completed": None
+                "warmup_completed": None,
+                "latency_ms": round(latency_ms, 2)
             }
         )
 
@@ -69,13 +74,17 @@ async def health(raw_request: Request):
     # Determine if model is healthy
     models_healthy = model_id is not None and model_id != 'unknown'
 
+    # Calculate latency
+    latency_ms = (time.time() - start_time) * 1000
+
     return HealthCheckResponse(
         status=HealthCheckStatus.OK,
         model_id=model_id,
         model_status="initialized",
         models_healthy=models_healthy,
         warmup_enabled=warmup_enabled,
-        warmup_completed=warmup_completed
+        warmup_completed=warmup_completed,
+        latency_ms=round(latency_ms, 2)
     )
 
 @router.get("/v1/models")
@@ -152,7 +161,7 @@ async def queue_stats(raw_request: Request):
     handler = raw_request.app.state.handler
     if handler is None:
         return JSONResponse(content=create_error_response("Model handler not initialized", "service_unavailable", 503), status_code=503)
-    
+
     try:
         stats = await handler.get_queue_stats()
         return {
@@ -162,6 +171,83 @@ async def queue_stats(raw_request: Request):
     except Exception as e:
         logger.error(f"Failed to get queue stats: {str(e)}")
         return JSONResponse(content=create_error_response("Failed to get queue stats", "server_error", 500), status_code=500)
+
+@router.get("/internal/diagnostics")
+async def internal_diagnostics(raw_request: Request):
+    """
+    Phase-4: Comprehensive diagnostics endpoint for system observability.
+
+    Returns:
+        - VRAM usage summary
+        - Per-model statistics (request counts, last access)
+        - Queue statistics
+        - System health metrics
+    """
+    start_time = time.time()
+
+    handler = getattr(raw_request.app.state, 'handler', None)
+    registry = getattr(raw_request.app.state, 'registry', None)
+    config = getattr(raw_request.app.state, 'config', None)
+
+    diagnostics = {
+        "timestamp": int(time.time()),
+        "status": "ok",
+        "handler_initialized": handler is not None,
+        "registry_initialized": registry is not None,
+    }
+
+    # VRAM tracking
+    if registry:
+        try:
+            vram_summary = registry.get_vram_usage_summary()
+            diagnostics["vram"] = vram_summary
+        except Exception as e:
+            logger.warning(f"Failed to get VRAM summary: {str(e)}")
+            diagnostics["vram"] = {"error": str(e)}
+
+    # Model statistics
+    if registry:
+        try:
+            models_list = registry.list_models()
+            model_stats = []
+            for model_info in models_list:
+                model_id = model_info["id"]
+                try:
+                    stats = registry.get_model_stats(model_id)
+                    model_stats.append(stats)
+                except Exception as e:
+                    logger.warning(f"Failed to get stats for model {model_id}: {str(e)}")
+
+            diagnostics["models"] = {
+                "count": len(models_list),
+                "stats": model_stats
+            }
+        except Exception as e:
+            logger.warning(f"Failed to get model stats: {str(e)}")
+            diagnostics["models"] = {"error": str(e)}
+
+    # Queue statistics
+    if handler and hasattr(handler, 'get_queue_stats'):
+        try:
+            queue_stats_data = await handler.get_queue_stats()
+            diagnostics["queue"] = queue_stats_data
+        except Exception as e:
+            logger.warning(f"Failed to get queue stats: {str(e)}")
+            diagnostics["queue"] = {"error": str(e)}
+
+    # Configuration info
+    if config:
+        diagnostics["config"] = {
+            "model_type": getattr(config, 'model_type', None),
+            "max_concurrency": getattr(config, 'max_concurrency', None),
+            "context_length": getattr(config, 'context_length', None),
+            "mlx_warmup": getattr(config, 'mlx_warmup', None),
+        }
+
+    # Calculate diagnostics latency
+    diagnostics["diagnostics_latency_ms"] = round((time.time() - start_time) * 1000, 2)
+
+    return diagnostics
 
 
 # =============================================================================
@@ -198,9 +284,12 @@ async def embeddings(request: EmbeddingRequest, raw_request: Request):
     if handler is None:
         return JSONResponse(content=create_error_response("Model handler not initialized", "service_unavailable", 503), status_code=503)
 
+    # Get request ID from middleware
+    request_id = getattr(raw_request.state, 'request_id', None)
+
     try:
         embeddings = await handler.generate_embeddings_response(request)
-        return create_response_embeddings(embeddings, request.model, request.encoding_format)
+        return create_response_embeddings(embeddings, request.model, request.encoding_format, request_id)
     except Exception as e:
         logger.error(f"Error processing embedding request: {str(e)}", exc_info=True)
         return JSONResponse(content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -282,7 +371,7 @@ async def create_audio_transcriptions(
         logger.error(f"Error processing transcription request: {str(e)}", exc_info=True)
         return JSONResponse(content=create_error_response(str(e)), status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
     
-def create_response_embeddings(embeddings: List[float], model: str, encoding_format: str = "float") -> EmbeddingResponse:
+def create_response_embeddings(embeddings: List[float], model: str, encoding_format: str = "float", request_id: Optional[str] = None) -> EmbeddingResponse:
     embeddings_response = []
     for index, embedding in enumerate(embeddings):
         if encoding_format == "base64":
@@ -291,7 +380,7 @@ def create_response_embeddings(embeddings: List[float], model: str, encoding_for
             embeddings_response.append(EmbeddingResponseData(embedding=base64.b64encode(embedding_bytes).decode('utf-8'), index=index))
         else:
             embeddings_response.append(EmbeddingResponseData(embedding=embedding, index=index))
-    return EmbeddingResponse(data=embeddings_response, model=model)
+    return EmbeddingResponse(data=embeddings_response, model=model, request_id=request_id)
 
 def create_response_chunk(chunk: Union[str, Dict[str, Any]], model: str, is_final: bool = False, finish_reason: Optional[str] = "stop", chat_id: Optional[str] = None, created_time: Optional[int] = None, request_id: str = None) -> ChatCompletionChunk:
     """Create a formatted response chunk for streaming."""
