@@ -185,7 +185,293 @@ This document tracks session-to-session handoffs for the `mlx-openai-server-lab`
 
 ---
 
-## Session 2: TBD
+## Session 2: Phase-4 Readiness Snapshot
+**Date**: 2025-11-17
+**Branch**: `claude/phase4-repo-snapshot-01F2YXdaBv8rGTWHnc8MPqPv`
+**Goal**: Generate complete current-state repository snapshot to enable Phase-4 fusion implementation without guesswork
+
+### Discoveries
+
+**Current State Summary:**
+- Repository is in **clean state** (no uncommitted changes, Phase-3 branches merged)
+- **Readiness Score: 5/10** ⚠️ Foundation ready, but fusion layer completely missing
+- Tier 3A MLX provider is **production-ready** (8 stable OpenAI-compatible endpoints)
+- **Perfect local-first implementation** (zero cloud dependencies, 100% local MLX inference)
+- Tier 2 integration features **fully implemented** (health endpoints, request tracking, rich metadata)
+- Model registry exists but **single-model limitation** (cannot load multiple models simultaneously)
+
+**Critical Gaps Identified:**
+1. ❌ **No Fusion Orchestrator** - No `/api/fusion/*` endpoints, single-model-per-instance only
+2. ❌ **No RAG Provider** - No `/api/rag/*` endpoints, only example notebooks
+3. ❌ **No MCP Server** - No `/api/mcp/*` endpoints, no state management layer
+4. ❌ **No Persistent State** - Completely stateless (MongoDB/Redis not integrated)
+5. ❌ **No Job Tracking** - No job history, status persistence, or database integration
+6. ❌ **No Multi-Model Support** - Registry exists but only supports one model at a time
+
+**Service Architecture Analysis:**
+- **MLX Provider (Tier 3A)**: ✅ Fully operational, OpenAI-compatible, request queue with concurrency control
+- **RAG Provider**: ❌ Not present (only `simple_rag_demo.ipynb` example)
+- **Fusion Orchestrator**: ❌ Not present (FUSION_PHASE0.md documents Phase 0 only)
+- **MCP Server**: ❌ Not present (Tier 2 integration planned but not implemented)
+- **Health Endpoints**: ✅ Tier 2-compliant (`/health` with warmup status, `/v1/queue/stats`)
+
+**Registry System Audit:**
+- **Models Registry**: ✅ Implemented (`app/core/model_registry.py`) but single-model only
+  - Rich metadata: `id`, `type`, `family`, `description`, `context_length`, `tags`, `tier`
+  - Local-first entries only (no Ollama/OpenAI/Anthropic/Gemini artifacts)
+  - Registry endpoints correct (`GET /v1/models`, `GET /v1/models/{id}`)
+- **Tools Registry**: ❌ Not present (tool calling via OpenAI format, but no registry)
+- **Apps Registry**: ❌ Not present (no application-level orchestration)
+
+**API Surface Inventory:**
+- **Fully Implemented**: 9 endpoints (health, models, queue stats, chat, embeddings, images, audio)
+- **Missing Phase-4 Routes**: `/api/fusion/*`, `/api/rag/*`, `/api/mcp/*`, `/internal/*` (diagnostics)
+- **OpenAI Compatibility**: ✅ Stable, production-ready (streaming & non-streaming chat completions)
+
+**Tests & Tooling:**
+- 3 test files (517 lines total): endpoints, model registry, tool parser
+- ⚠️ pytest not available in environment (cannot verify test execution)
+- Missing: integration tests, fusion/orchestration tests, multi-model scenarios
+- Dependencies clean, no MongoDB/Redis clients installed yet
+- Scripts: health dashboard and contract validation (not integrated)
+
+### Actions Taken
+
+1. ✅ Analyzed git state (clean working tree, Phase-3 branches merged)
+2. ✅ Audited service architecture (MLX provider operational, fusion/RAG/MCP absent)
+3. ✅ Examined API surface (9 stable endpoints, Phase-4 routes missing)
+4. ✅ Reviewed registry system (models registry implemented, tools/apps registries absent)
+5. ✅ Assessed local-first purity (100% local, zero cloud dependencies)
+6. ✅ Evaluated test coverage (basic tests present, integration tests missing)
+7. ✅ Calculated Phase-4 readiness score (5/10 - foundation ready, fusion layer missing)
+8. ✅ Created **comprehensive snapshot report** (`docs/PHASE4_SNAPSHOT.md`):
+   - Repository metadata and git state
+   - Service status (Tier 2 & Tier 3)
+   - Complete API surface audit with route-by-route status
+   - Registry system state (models, tools, apps)
+   - Tests & tooling infrastructure review
+   - Phase-4 readiness score with dimension breakdown
+   - Prioritized next steps (Critical → Low priority)
+   - Key file locations appendix
+9. ✅ Updated session handoff log (`docs/HANDOFFS.md` - this entry)
+
+### Next Actions for Phase-4 Implementation
+
+**CRITICAL PATH (Must Complete Before Any Phase-4 Coding):**
+
+#### 1. Architecture Definition (Week 1)
+- [ ] **Document Fusion Architecture**: Create `docs/PHASE4_ARCHITECTURE.md`
+  - Define fusion orchestration service contract
+  - Specify multi-model routing strategy
+  - Document RAG provider interface
+  - Define MCP server protocol and Tier 2 ↔ Tier 3 integration
+  - Design state management schema (MongoDB collections)
+
+- [ ] **Create API Specifications**: Create `docs/PHASE4_API_SPEC.md`
+  - `/api/fusion/*` endpoints specification
+  - `/api/rag/*` endpoints specification
+  - `/api/mcp/*` endpoints specification
+  - `/internal/diagnostics` endpoint specification
+  - Request/response schemas with examples
+
+#### 2. Foundation Infrastructure (Week 1-2)
+- [ ] **Multi-Model Registry Enhancement**: Extend `app/core/model_registry.py`
+  - Support multiple concurrent models (currently single-model only)
+  - Add VRAM monitoring and model eviction policies
+  - Implement model loading queue (prevent VRAM exhaustion)
+  - Add model capability discovery and tagging
+
+- [ ] **State Management Integration**: Create `app/core/state_manager.py`
+  - Integrate MongoDB client (motor) for job tracking
+  - Define job schema: `{job_id, model_id, status, created_at, completed_at, metadata}`
+  - Status enum: `queued`, `processing`, `completed`, `failed`, `cancelled`
+  - Implement job CRUD operations
+
+- [ ] **Persistent Queue**: Create `app/core/persistent_queue.py`
+  - Redis or MongoDB-backed queue (survive restarts)
+  - Queue persistence for pending requests
+  - Job recovery on server restart
+
+#### 3. Fusion Orchestrator (Week 2-3)
+- [ ] **Fusion Coordinator Service**: Create `app/fusion/coordinator.py`
+  - Multi-model workflow orchestration
+  - Model capability-based routing
+  - Request decomposition and parallel execution
+  - Response aggregation and formatting
+
+- [ ] **Fusion API Endpoints**: Update `app/api/endpoints.py`
+  - `POST /api/fusion/orchestrate` - Multi-model workflow execution
+  - `GET /api/fusion/workflows` - List available fusion workflows
+  - `GET /api/fusion/capabilities` - Model capability discovery
+  - `POST /api/fusion/compose` - Compose custom workflows
+
+- [ ] **Model Management API**: Update `app/api/endpoints.py`
+  - `POST /v1/models/load` - Load additional model (multi-model support)
+  - `DELETE /v1/models/{id}/unload` - Unload specific model
+  - `GET /v1/models/{id}/stats` - Model usage statistics
+  - `POST /v1/models/{id}/warmup` - Warmup model without inference
+
+#### 4. RAG Provider (Week 3-4)
+- [ ] **RAG Service Layer**: Create `app/rag/` module
+  - `app/rag/document_processor.py` - Document ingestion and chunking
+  - `app/rag/vector_store.py` - Vector database integration (ChromaDB or FAISS)
+  - `app/rag/retriever.py` - Semantic search and retrieval
+  - `app/rag/generator.py` - RAG generation with MLX models
+
+- [ ] **RAG API Endpoints**: Update `app/api/endpoints.py`
+  - `POST /api/rag/ingest` - Ingest documents into vector store
+  - `POST /api/rag/query` - RAG query with retrieval + generation
+  - `GET /api/rag/documents` - List ingested documents
+  - `DELETE /api/rag/documents/{id}` - Remove document from store
+  - `GET /api/rag/collections` - List vector collections
+
+- [ ] **RAG Configuration**: Add to `app/core/config.py`
+  - Vector store backend selection (ChromaDB, FAISS, MLX-native)
+  - Chunk size and overlap configuration
+  - Retrieval parameters (top-k, similarity threshold)
+  - Embedding model selection
+
+#### 5. MCP Server (Week 4-5)
+- [ ] **MCP Protocol Handlers**: Create `app/mcp/` module
+  - `app/mcp/protocol.py` - MCP protocol implementation
+  - `app/mcp/handlers.py` - Request/response handlers
+  - `app/mcp/state_sync.py` - Tier 2 state synchronization
+
+- [ ] **MCP API Endpoints**: Update `app/api/endpoints.py`
+  - `POST /api/mcp/jobs` - Submit job to MCP queue
+  - `GET /api/mcp/jobs/{id}` - Get job status
+  - `GET /api/mcp/jobs` - List jobs (filterable by status, model, time)
+  - `DELETE /api/mcp/jobs/{id}` - Cancel pending job
+  - `POST /api/mcp/webhook` - Register webhook for job notifications
+
+- [ ] **Job Tracking System**: Create `app/core/job_tracker.py`
+  - Job lifecycle management (queued → processing → completed/failed)
+  - Job history and audit trail
+  - Webhook/callback system for Tier 2 notifications
+  - Job retention policy and cleanup
+
+#### 6. Observability & Diagnostics (Week 5-6)
+- [ ] **Metrics Export**: Create `app/observability/metrics.py`
+  - Prometheus metrics export (`/metrics` endpoint)
+  - Request rate, error rate, latency (p50, p95, p99)
+  - Queue depth, throughput, concurrency
+  - VRAM usage, model inference time, memory stats
+
+- [ ] **Distributed Tracing**: Create `app/observability/tracing.py`
+  - OpenTelemetry integration
+  - Request ID propagation across services
+  - Trace collection and export
+
+- [ ] **Diagnostics Endpoint**: Create `/internal/diagnostics`
+  - System health (VRAM, CPU, memory)
+  - Model status and statistics
+  - Queue health and backlog
+  - Recent errors and warnings
+  - Configuration dump
+
+#### 7. Testing & Documentation (Week 6)
+- [ ] **Integration Tests**: Expand `tests/`
+  - `tests/test_multi_model.py` - Multi-model loading and routing
+  - `tests/test_fusion.py` - Fusion orchestration workflows
+  - `tests/test_rag.py` - RAG retrieval and generation
+  - `tests/test_mcp.py` - MCP protocol and job tracking
+  - `tests/test_tier2_integration.py` - End-to-end Tier 2 ↔ Tier 3
+
+- [ ] **Documentation Updates**:
+  - `docs/PHASE4_ARCHITECTURE.md` - Architecture overview
+  - `docs/PHASE4_API_SPEC.md` - API specifications
+  - `docs/FUSION_GUIDE.md` - Fusion orchestration guide
+  - `docs/RAG_GUIDE.md` - RAG provider integration guide
+  - `docs/MCP_PROTOCOL.md` - MCP server protocol specification
+  - Update `README.md` - Phase-4 capabilities and examples
+
+### Risks & Open Questions
+
+**Risks:**
+1. **VRAM Exhaustion**: Loading multiple models may exceed available VRAM
+   - *Mitigation*: Implement LRU model eviction, lazy loading, VRAM monitoring, model pooling
+2. **State Consistency**: Keeping Tier 2 and Tier 3 state synchronized
+   - *Mitigation*: MongoDB as single source of truth, atomic operations, idempotency
+3. **Complexity Explosion**: Fusion orchestration adds significant complexity
+   - *Mitigation*: Start with simple workflows, incremental feature rollout, comprehensive testing
+4. **Performance Degradation**: Multi-model routing overhead
+   - *Mitigation*: Benchmark early, optimize hot paths, implement request batching
+
+**Open Questions:**
+1. **Model Ownership**: Should Tier 3 own model registry, or Tier 2?
+   - *Recommendation*: Tier 2 dictates which models to load, Tier 3 manages lifecycle
+2. **Model Loading Failures**: How to handle out-of-VRAM errors?
+   - *Recommendation*: Return 503, log error, notify Tier 2, suggest model eviction
+3. **Job History Retention**: Store indefinitely or prune?
+   - *Recommendation*: Configurable TTL (default 7 days), archive to cold storage if needed
+4. **Streaming Support**: Should Tier 3 stream to Tier 2?
+   - *Recommendation*: Support both streaming (SSE) and non-streaming (JSON)
+5. **Vector Store**: Which vector database for RAG?
+   - *Recommendation*: Start with ChromaDB (easy setup), add FAISS/MLX-native as alternatives
+6. **Fusion Complexity**: How complex should fusion workflows be?
+   - *Recommendation*: Start simple (sequential, parallel), add conditional/branching later
+7. **MCP Protocol**: Should we implement full MCP spec or subset?
+   - *Recommendation*: Minimal viable protocol first, expand based on Tier 2 needs
+
+### Files Changed
+
+**Created:**
+- ✅ `docs/PHASE4_SNAPSHOT.md` - Complete Phase-4 readiness snapshot report
+
+**Updated:**
+- ✅ `docs/HANDOFFS.md` - Added Session 2 handoff entry (this section)
+
+### Files to Create in Phase-4
+
+**Architecture & Specs:**
+- `docs/PHASE4_ARCHITECTURE.md` - Phase-4 architecture design
+- `docs/PHASE4_API_SPEC.md` - Complete API specifications
+- `docs/FUSION_GUIDE.md` - Fusion orchestration guide
+- `docs/RAG_GUIDE.md` - RAG provider integration guide
+- `docs/MCP_PROTOCOL.md` - MCP server protocol spec
+
+**Core Infrastructure:**
+- `app/core/state_manager.py` - MongoDB state management
+- `app/core/persistent_queue.py` - Redis/MongoDB queue
+- `app/core/job_tracker.py` - Job lifecycle management
+- `app/core/config.py` - Centralized configuration
+
+**Fusion Layer:**
+- `app/fusion/coordinator.py` - Fusion orchestration coordinator
+- `app/fusion/workflows.py` - Workflow definitions
+- `app/fusion/router.py` - Model routing logic
+
+**RAG Layer:**
+- `app/rag/document_processor.py` - Document ingestion
+- `app/rag/vector_store.py` - Vector database interface
+- `app/rag/retriever.py` - Semantic retrieval
+- `app/rag/generator.py` - RAG generation
+
+**MCP Layer:**
+- `app/mcp/protocol.py` - MCP protocol implementation
+- `app/mcp/handlers.py` - Request handlers
+- `app/mcp/state_sync.py` - State synchronization
+
+**Observability:**
+- `app/observability/metrics.py` - Prometheus metrics
+- `app/observability/tracing.py` - OpenTelemetry tracing
+
+**Testing:**
+- `tests/test_multi_model.py` - Multi-model tests
+- `tests/test_fusion.py` - Fusion orchestration tests
+- `tests/test_rag.py` - RAG provider tests
+- `tests/test_mcp.py` - MCP protocol tests
+- `tests/test_tier2_integration.py` - Tier 2 ↔ Tier 3 integration tests
+
+**Schemas:**
+- `app/schemas/fusion.py` - Fusion request/response schemas
+- `app/schemas/rag.py` - RAG request/response schemas
+- `app/schemas/mcp.py` - MCP protocol schemas
+- `app/schemas/jobs.py` - Job tracking schemas
+
+---
+
+## Session 3: TBD
 **Date**: TBD
 **Branch**: TBD
 **Goal**: TBD
