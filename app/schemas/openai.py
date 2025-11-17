@@ -65,6 +65,7 @@ class HealthCheckResponse(OpenAIBaseModel):
     models_healthy: bool = Field(True, description="Whether all models are healthy and ready.")
     warmup_enabled: Optional[bool] = Field(None, description="Whether KV cache warmup is enabled.")
     warmup_completed: Optional[bool] = Field(None, description="Whether warmup has completed successfully.")
+    latency_ms: Optional[float] = Field(None, description="Health check latency in milliseconds.")
 
 class ErrorResponse(OpenAIBaseModel):
     object: str = Field("error", description="The object type, always 'error'.")
@@ -310,6 +311,7 @@ class EmbeddingResponse(OpenAIBaseModel):
     data: List[EmbeddingResponseData] = Field(..., description="List of embedding objects.")
     model: str = Field(..., description="The model used for embedding.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the embedding.")
+    request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
 class Model(OpenAIBaseModel):
     """
