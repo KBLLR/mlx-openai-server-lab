@@ -65,6 +65,83 @@ class MLXLMHandler:
             manual_tool_parser=self.tool_call_parser,
         )
 
+    def _build_context_section(self, context_chunks: Optional[List[Dict[str, Any]]] = None, htdi_context: Optional[Dict[str, Any]] = None) -> Tuple[str, Dict[str, Any]]:
+        """
+        Build a structured context section from RAG chunks and HTDI entity data.
+        Phase-4: Context-aware completion support.
+
+        Args:
+            context_chunks: List of context chunks from RAG or other sources.
+            htdi_context: HTDI context with room_id and entities.
+
+        Returns:
+            Tuple of (context_text, context_metadata)
+        """
+        context_sections = []
+        context_metadata = {
+            "context_used": False,
+            "context_sources": [],
+            "context_count": 0
+        }
+
+        # Build RAG context section
+        if context_chunks and len(context_chunks) > 0:
+            rag_section = "## Retrieved Context\n"
+            for idx, chunk in enumerate(context_chunks, 1):
+                text = chunk.get("text", "")
+                score = chunk.get("score")
+                metadata = chunk.get("metadata", {})
+
+                rag_section += f"\n[Context {idx}]"
+                if score is not None:
+                    rag_section += f" (relevance: {score:.2f})"
+                if metadata.get("source"):
+                    rag_section += f" [source: {metadata['source']}]"
+                rag_section += f"\n{text}\n"
+
+            context_sections.append(rag_section)
+            context_metadata["context_used"] = True
+            context_metadata["context_sources"].append("rag")
+            context_metadata["context_count"] += len(context_chunks)
+
+        # Build HTDI context section
+        if htdi_context:
+            room_id = htdi_context.get("room_id") or htdi_context.get("roomId")
+            entities = htdi_context.get("entities", [])
+
+            if room_id or entities:
+                htdi_section = "## Live Room State\n"
+
+                if room_id:
+                    htdi_section += f"Room: {room_id}\n"
+
+                if entities:
+                    htdi_section += "\nCurrent Entities:\n"
+                    for entity in entities:
+                        entity_id = entity.get("entity_id") or entity.get("entityId")
+                        state = entity.get("state")
+                        attributes = entity.get("attributes", {})
+
+                        htdi_section += f"  - {entity_id}: {state}"
+
+                        # Add relevant attributes (e.g., unit_of_measurement)
+                        if attributes:
+                            unit = attributes.get("unit_of_measurement")
+                            if unit:
+                                htdi_section += f" {unit}"
+                        htdi_section += "\n"
+
+                context_sections.append(htdi_section)
+                context_metadata["context_used"] = True
+                if "htdi" not in context_metadata["context_sources"]:
+                    context_metadata["context_sources"].append("htdi")
+                context_metadata["context_count"] += len(entities) if entities else 1
+
+        # Combine sections
+        context_text = "\n".join(context_sections)
+
+        return context_text, context_metadata
+
     def _count_tokens(self, text: str) -> int:
         """
         Count the number of tokens in a text string.
@@ -415,15 +492,18 @@ class MLXLMHandler:
                 if not enable_thinking:
                     thinking_parser = None
 
+            # Phase-4: Extract context metadata
+            context_metadata = model_params.get("_context_metadata", {})
+
             if not thinking_parser and not tool_parser:
-                return {"response": response, "usage": usage}
+                return {"response": response, "usage": usage, "context_metadata": context_metadata}
 
             response_text = response
 
             if thinking_parser and ParserFactory.has_special_parsing(self.reasoning_parser):
                 # Handle parsers with special parsing logic (e.g., harmony returns dict)
                 parsed = thinking_parser.parse(response_text)
-                return {"response": parsed, "usage": usage}
+                return {"response": parsed, "usage": usage, "context_metadata": context_metadata}
 
 
             if thinking_parser and ParserFactory.needs_redacted_reasoning_prefix(self.reasoning_parser):
@@ -445,7 +525,7 @@ class MLXLMHandler:
                 parsed_response["tool_calls"] = tool_response
             parsed_response["content"] = response_text
 
-            return {"response": parsed_response, "usage": usage}
+            return {"response": parsed_response, "usage": usage, "context_metadata": context_metadata}
                         
         except asyncio.QueueFull:
             logger.error("Too many requests. Service is at capacity.")
@@ -577,10 +657,11 @@ class MLXLMHandler:
     async def _prepare_text_request(self, request: ChatCompletionRequest) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
         """
         Prepare a text request by parsing model parameters and verifying the format of messages.
-        
+        Phase-4: Now supports context-aware completion with RAG and HTDI context injection.
+
         Args:
             request: ChatCompletionRequest object containing the messages.
-        
+
         Returns:
             Tuple containing the formatted chat messages and model parameters.
         """
@@ -588,7 +669,11 @@ class MLXLMHandler:
             request_dict = request.model_dump()
             tools = request_dict.pop("tools", None)
             tool_choice = request_dict.pop("tool_choice", None)
-            
+
+            # Phase-4: Extract context and htdi fields
+            context_chunks = request_dict.pop("context", None) or []
+            htdi_context = request_dict.pop("htdi", None)
+
             if tools:
                 # Enable auto tool choice if requested via CLI flag
                 if self.enable_auto_tool_choice and tool_choice == "auto":
@@ -601,7 +686,22 @@ class MLXLMHandler:
                 response_format = request_dict.pop("response_format", None)
                 if response_format.get("type") == "json_schema":
                     request_dict["schema"] = response_format.get("json_schema", None).get("schema", None)
-            
+
+            # Phase-4: Build context section if context or htdi provided
+            context_text = ""
+            context_metadata = {
+                "context_used": False,
+                "context_sources": [],
+                "context_count": 0
+            }
+
+            if context_chunks or htdi_context:
+                context_text, context_metadata = self._build_context_section(context_chunks, htdi_context)
+                logger.info(f"Phase-4: Injected context - sources: {context_metadata['context_sources']}, count: {context_metadata['context_count']}")
+
+            # Store context metadata for later use in response
+            request_dict["_context_metadata"] = context_metadata
+
             # Format chat messages and merge system messages into index 0
             chat_messages = []
             system_messages = []
@@ -631,14 +731,24 @@ class MLXLMHandler:
             if system_messages:
                 # Combine all system message contents
                 combined_system_content = "\n\n".join([msg["content"] for msg in system_messages if msg.get("content")])
-                
+
+                # Phase-4: Prepend context section if available
+                if context_text:
+                    combined_system_content = context_text + "\n\n" + combined_system_content
+
                 # Create merged system message using the first system message as template
                 merged_system_message = system_messages[0].copy()
                 merged_system_message["content"] = combined_system_content
-                
+
                 # Add merged system message at index 0
                 chat_messages.append(merged_system_message)
-            
+            elif context_text:
+                # Phase-4: No system messages but context exists - create a new system message
+                chat_messages.append({
+                    "role": "system",
+                    "content": context_text
+                })
+
             # Add all non-system messages after the merged system message
             chat_messages.extend(non_system_messages)
             return chat_messages, request_dict
