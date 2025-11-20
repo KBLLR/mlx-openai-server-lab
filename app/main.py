@@ -284,9 +284,23 @@ def create_app(config_args: Optional[argparse.Namespace] = None, *, configure_lo
     application.include_router(router)
 
     application.add_middleware(RequestTrackingMiddleware)
+
+    # CORS configuration - restrict origins for Smart Campus integration
+    # For production, set CAMPUS_FRONTEND_URL environment variable
+    allowed_origins = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else [
+        "http://localhost:5173",  # Vite dev server (default)
+        "http://localhost:3000",  # Alternative dev port
+        "http://localhost:4173",  # Vite preview
+        os.getenv("CAMPUS_FRONTEND_URL", "http://localhost:5173"),
+    ]
+    # Remove empty strings and duplicates
+    allowed_origins = list(set([origin.strip() for origin in allowed_origins if origin.strip()]))
+
+    logger.info(f"CORS allowed origins: {allowed_origins}")
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
