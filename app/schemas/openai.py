@@ -103,6 +103,42 @@ class ChatCompletionContentPartText(OpenAIBaseModel):
 
 ChatCompletionContentPart: TypeAlias = Union[ChatCompletionContentPartImage, ChatCompletionContentPartVideo, ChatCompletionContentPartInputAudio, ChatCompletionContentPartText]
 
+# Phase-4: Context-aware completion models
+class ContextChunk(OpenAIBaseModel):
+    """
+    Represents a single context chunk from RAG or other sources.
+    Phase-4: Used to inject retrieval context into LLM prompts.
+    """
+    text: str = Field(..., description="Context text content.")
+    score: Optional[float] = Field(None, description="Relevance score (e.g., similarity score from RAG).")
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata (source, collection, etc.).")
+
+class HTDIEntity(OpenAIBaseModel):
+    """
+    Represents a Home Assistant entity with state and attributes.
+    Phase-4: Used for Smart Campus entity context injection.
+    """
+    entity_id: str = Field(..., alias="entityId", description="Entity ID (e.g., sensor.peace_temperature).")
+    state: str = Field(..., description="Current state value.")
+    attributes: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Entity attributes.")
+
+class HTDIContext(OpenAIBaseModel):
+    """
+    Container for HTDI (Home Things Device Interface) context.
+    Phase-4: Includes room identifier and associated entities.
+    """
+    room_id: Optional[str] = Field(None, alias="roomId", description="Room identifier (e.g., peace, classroom).")
+    entities: Optional[List[HTDIEntity]] = Field(default_factory=list, description="List of Home Assistant entities relevant to this request.")
+
+class ContextMetadata(OpenAIBaseModel):
+    """
+    Metadata about context usage in the response.
+    Phase-4: Tracks which contexts were injected into the prompt.
+    """
+    context_used: bool = Field(False, description="Whether context was used in this request.")
+    context_sources: Optional[List[str]] = Field(default_factory=list, description="Types of context used (e.g., ['rag', 'htdi']).")
+    context_count: Optional[int] = Field(0, description="Number of context chunks injected.")
+
 class PromptTokenUsageInfo(OpenAIBaseModel):
     cached_tokens: Optional[int] = None
 
@@ -162,6 +198,10 @@ class ChatCompletionRequestBase(OpenAIBaseModel):
     user: Optional[str] = Field(None, description="User identifier.")
     repetition_penalty: Optional[float] = Field(1.05, description="Repetition penalty for token generation.")
     repetition_context_size: Optional[int] = Field(20, description="Repetition context size for token generation.")
+
+    # Phase-4: Context-aware completion fields
+    context: Optional[List[ContextChunk]] = Field(default_factory=list, description="RAG/context chunks to inject into the prompt.")
+    htdi: Optional[HTDIContext] = Field(None, description="HTDI context (room state, entities) for Smart Campus integration.")
 
     @validator("messages")
     def check_messages_not_empty(cls, v):
@@ -237,6 +277,9 @@ class ChatCompletionResponse(OpenAIBaseModel):
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the completion.")
     request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
 
+    # Phase-4: Context metadata
+    htdi: Optional[ContextMetadata] = Field(None, description="Metadata about context usage (Phase-4).")
+
 class ChoiceDeltaFunctionCall(OpenAIBaseModel):
     """
     Represents a function call delta in a streaming response.
@@ -283,6 +326,9 @@ class ChatCompletionChunk(OpenAIBaseModel):
     object: Literal["chat.completion.chunk"] = Field(..., description="The object type, always 'chat.completion.chunk'.")
     usage: Optional[UsageInfo] = Field(default=None, description="The usage of the chunk.")
     request_id: Optional[str] = Field(None, description="Request correlation ID for tracking.")
+
+    # Phase-4: Context metadata
+    htdi: Optional[ContextMetadata] = Field(None, description="Metadata about context usage (Phase-4).")
 
 # Embedding models
 class EmbeddingRequest(OpenAIBaseModel):

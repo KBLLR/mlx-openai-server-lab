@@ -170,6 +170,343 @@ export MLX_WARMUP=true
 
 📖 **[Full Tier 2 Integration Guide →](docs/TIER2_INTEGRATION.md)**
 
+## Phase-4: Context-Aware Completions
+
+The server supports **context-aware completions** that allow you to inject RAG (Retrieval-Augmented Generation) context and HTDI (Home Things Device Interface) entity state directly into LLM prompts. This enables seamless integration with orchestrators, RAG providers, and Smart Campus systems.
+
+### Key Features
+
+- 🔍 **RAG Context Injection**: Pass retrieved document chunks with relevance scores
+- 🏠 **HTDI Entity Context**: Include live room state and Home Assistant entities
+- 📊 **Context Metadata Tracking**: Response includes metadata about which contexts were used
+- 🎯 **Deterministic Prompt Building**: Context is structured and injected consistently
+- 🔗 **OpenAI-Compatible**: Extends standard chat completion API with optional fields
+
+### API Contract
+
+#### Request Extensions
+
+The `POST /v1/chat/completions` endpoint accepts two optional fields:
+
+**`context`** (array): RAG/retrieval context chunks
+```json
+{
+  "context": [
+    {
+      "text": "Retrieved document content...",
+      "score": 0.87,
+      "metadata": {
+        "source": "rag",
+        "collection": "rooms"
+      }
+    }
+  ]
+}
+```
+
+**`htdi`** (object): HTDI context with room state and entities
+```json
+{
+  "htdi": {
+    "roomId": "peace",
+    "entities": [
+      {
+        "entityId": "sensor.peace_temperature",
+        "state": "22.5",
+        "attributes": {
+          "unit_of_measurement": "°C"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Response Extensions
+
+Responses include a **`htdi`** field with context usage metadata:
+
+```json
+{
+  "id": "chatcmpl_...",
+  "choices": [...],
+  "usage": {...},
+  "htdi": {
+    "context_used": true,
+    "context_sources": ["rag", "htdi"],
+    "context_count": 3
+  }
+}
+```
+
+### Example Usage
+
+#### 1. RAG Context Injection
+
+```python
+import openai
+
+client = openai.OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="local-model",
+    messages=[
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. Use the provided context to answer questions."
+        },
+        {
+            "role": "user",
+            "content": "What is the temperature range for the peace room?"
+        }
+    ],
+    # RAG context from retrieval system
+    extra_body={
+        "context": [
+            {
+                "text": "The peace room maintains a temperature between 20-24°C for optimal studying.",
+                "score": 0.92,
+                "metadata": {"source": "rag", "collection": "facilities"}
+            },
+            {
+                "text": "Temperature sensors in study rooms report every 5 minutes.",
+                "score": 0.85,
+                "metadata": {"source": "rag", "collection": "sensors"}
+            }
+        ]
+    }
+)
+
+print(response.choices[0].message.content)
+print(f"Context used: {response.htdi.context_used if response.htdi else False}")
+```
+
+#### 2. HTDI Entity Context
+
+```python
+response = client.chat.completions.create(
+    model="local-model",
+    messages=[
+        {
+            "role": "user",
+            "content": "What's the current room status?"
+        }
+    ],
+    # HTDI context with live entity state
+    extra_body={
+        "htdi": {
+            "roomId": "peace",
+            "entities": [
+                {
+                    "entityId": "sensor.peace_temperature",
+                    "state": "22.5",
+                    "attributes": {"unit_of_measurement": "°C"}
+                },
+                {
+                    "entityId": "light.peace_main",
+                    "state": "on",
+                    "attributes": {"brightness": 80}
+                },
+                {
+                    "entityId": "sensor.peace_occupancy",
+                    "state": "2",
+                    "attributes": {"unit_of_measurement": "people"}
+                }
+            ]
+        }
+    }
+)
+
+print(response.choices[0].message.content)
+```
+
+#### 3. Combined RAG + HTDI Context
+
+```python
+response = client.chat.completions.create(
+    model="local-model",
+    messages=[
+        {
+            "role": "system",
+            "content": "You are a smart building assistant."
+        },
+        {
+            "role": "user",
+            "content": "Is the peace room suitable for studying right now?"
+        }
+    ],
+    extra_body={
+        # RAG context about room guidelines
+        "context": [
+            {
+                "text": "The peace room is designed for quiet study. Optimal conditions: 21-23°C, low noise.",
+                "score": 0.89,
+                "metadata": {"source": "rag", "collection": "guidelines"}
+            }
+        ],
+        # HTDI context with live room state
+        "htdi": {
+            "roomId": "peace",
+            "entities": [
+                {
+                    "entityId": "sensor.peace_temperature",
+                    "state": "22.0",
+                    "attributes": {"unit_of_measurement": "°C"}
+                },
+                {
+                    "entityId": "sensor.peace_noise_level",
+                    "state": "35",
+                    "attributes": {"unit_of_measurement": "dB"}
+                }
+            ]
+        }
+    }
+)
+
+print(response.choices[0].message.content)
+# Model has access to both retrieved knowledge and live sensor data
+```
+
+#### 4. Raw HTTP Request
+
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "local-model",
+    "messages": [
+      {"role": "user", "content": "What is the temperature?"}
+    ],
+    "context": [
+      {
+        "text": "Temperature sensor readings from the past hour show stable conditions.",
+        "score": 0.91,
+        "metadata": {"source": "rag"}
+      }
+    ],
+    "htdi": {
+      "roomId": "peace",
+      "entities": [
+        {
+          "entityId": "sensor.peace_temperature",
+          "state": "22.5",
+          "attributes": {"unit_of_measurement": "°C"}
+        }
+      ]
+    }
+  }'
+```
+
+### How Context Injection Works
+
+1. **Context Building**: When `context` or `htdi` fields are present, the server builds a structured context section
+2. **System Prompt Injection**: Context is prepended to the system message (or creates one if none exists):
+   ```
+   ## Retrieved Context
+
+   [Context 1] (relevance: 0.92) [source: rag]
+   Temperature sensors report every 5 minutes...
+
+   [Context 2] (relevance: 0.85)
+   The peace room maintains optimal temperature...
+
+   ## Live Room State
+   Room: peace
+
+   Current Entities:
+     - sensor.peace_temperature: 22.5 °C
+     - light.peace_main: on
+     - sensor.peace_occupancy: 2 people
+
+   [Original system message continues...]
+   ```
+3. **Metadata Tracking**: Response includes which context sources were used and how many chunks
+4. **Non-Destructive**: User messages are always preserved exactly as provided
+
+### Integration Patterns
+
+#### With RAG Provider (mlx-rag)
+
+```python
+# 1. Query RAG system
+rag_results = rag_client.query(
+    query="What is the peace room temperature range?",
+    collection="facilities",
+    top_k=3
+)
+
+# 2. Pass to LLM with context
+response = llm_client.chat.completions.create(
+    model="local-model",
+    messages=[{"role": "user", "content": "What is the peace room temperature range?"}],
+    extra_body={
+        "context": [
+            {
+                "text": result.text,
+                "score": result.score,
+                "metadata": result.metadata
+            }
+            for result in rag_results
+        ]
+    }
+)
+```
+
+#### With Smart Campus Orchestrator
+
+```python
+# Orchestrator sends live entity state with user query
+response = llm_client.chat.completions.create(
+    model="local-model",
+    messages=[{"role": "user", "content": user_query}],
+    extra_body={
+        "htdi": {
+            "roomId": current_room,
+            "entities": get_room_entities(current_room)  # Live HA state
+        }
+    }
+)
+```
+
+### Best Practices
+
+✅ **DO:**
+- Include relevance scores for RAG context to help the model prioritize information
+- Limit context chunks to 3-5 most relevant results to avoid token bloat
+- Use metadata fields to track sources for debugging and observability
+- Check `response.htdi.context_used` to verify context was injected
+- Keep context text concise and well-formatted
+
+❌ **DON'T:**
+- Don't send more than 10 context chunks (diminishing returns, token waste)
+- Don't include raw JSON/logs in context text (model sees formatted version)
+- Don't assume context is always used (check metadata in response)
+- Don't exceed model's context window with combined user + context tokens
+
+### Testing
+
+Run the Phase-4 test suite:
+
+```bash
+# Start server with a language model
+python -m app.main --model-path mlx-community/gemma-3-4b-it-4bit --model-type lm
+
+# Run Phase-4 tests (in another terminal)
+python tests/test_phase4_context_aware.py
+```
+
+### Security Considerations
+
+- Context is injected into the system prompt, so it has high influence on model behavior
+- Validate and sanitize context from untrusted sources
+- Monitor context metadata in responses for unexpected injection patterns
+- Use request IDs for end-to-end tracing of context sources
+
+📖 **For orchestrator integration details, see `PHASE4_INTEGRATION_PLAN.md` in the parent repository.**
+
 ## Supported Model Types
 
 The server supports six types of MLX models:

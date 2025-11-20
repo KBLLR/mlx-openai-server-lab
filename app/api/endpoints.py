@@ -572,7 +572,8 @@ async def process_text_request(handler, request: ChatCompletionRequest, request_
     result = await handler.generate_text_response(request, request_id)
     response_data = result.get("response")
     usage = result.get("usage")
-    return format_final_response(response_data, request.model, request_id, usage)
+    context_metadata = result.get("context_metadata", {})  # Phase-4: Extract context metadata
+    return format_final_response(response_data, request.model, request_id, usage, context_metadata)
 
 def get_id():
     """
@@ -590,8 +591,17 @@ def get_tool_call_id():
     random_suffix = random.randint(0, 999999)
     return f"call_{timestamp}{random_suffix:06d}"
 
-def format_final_response(response: Union[str, Dict[str, Any]], model: str, request_id: str = None, usage=None) -> ChatCompletionResponse:
-    """Format the final non-streaming response."""
+def format_final_response(response: Union[str, Dict[str, Any]], model: str, request_id: str = None, usage=None, context_metadata: Optional[Dict[str, Any]] = None) -> ChatCompletionResponse:
+    """
+    Format the final non-streaming response.
+    Phase-4: Now includes context metadata for tracking context usage.
+    """
+
+    # Convert context_metadata to ContextMetadata model if provided
+    from app.schemas.openai import ContextMetadata
+    htdi_metadata = None
+    if context_metadata and context_metadata.get("context_used"):
+        htdi_metadata = ContextMetadata(**context_metadata)
 
     if isinstance(response, str):
         return ChatCompletionResponse(
@@ -605,7 +615,8 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
                 finish_reason="stop"
             )],
             usage=usage,
-            request_id=request_id
+            request_id=request_id,
+            htdi=htdi_metadata
         )
 
     reasoning_content = response.get("reasoning_content", None)
@@ -620,7 +631,8 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
             model=model,
             choices=[Choice(index=0, message=Message(role="assistant", content=response_content, reasoning_content=reasoning_content), finish_reason="stop")],
             usage=usage,
-            request_id=request_id
+            request_id=request_id,
+            htdi=htdi_metadata
         )
     for idx, tool_call in enumerate(tool_calls):
         arguments = tool_call.get("arguments")
@@ -654,5 +666,6 @@ def format_final_response(response: Union[str, Dict[str, Any]], model: str, requ
             finish_reason="tool_calls"
         )],
         usage=usage,
-        request_id=request_id
+        request_id=request_id,
+        htdi=htdi_metadata
     )
