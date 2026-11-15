@@ -214,7 +214,7 @@ def create_lifespan(config_args):
                     logger.info(f"  Context Length: {model_obj.max_kv_size}")
                 if hasattr(model_obj, 'model_type') and model_obj.model_type:
                     logger.info(f"  Model Family: {model_obj.model_type}")
-                if hasattr(model_obj.model, 'dtype'):
+                if hasattr(getattr(model_obj, 'model', None), 'dtype'):
                     logger.info(f"  Dtype: {model_obj.model.dtype}")
 
             # Log image generation specific info
