@@ -1,11 +1,10 @@
 import sys
-import asyncio
 import click
 import uvicorn
 from loguru import logger
 from functools import lru_cache
 from app.version import __version__
-from app.main import setup_server
+from app.main import create_app
 from app.handler.parser.factory import PARSER_REGISTRY
 
 class Config:
@@ -29,6 +28,8 @@ class Config:
         self.tool_call_parser = tool_call_parser
         self.reasoning_parser = reasoning_parser
         self.trust_remote_code = trust_remote_code
+        # Matches app.main.parse_args(); launch has no separate flag for this.
+        self.mlx_warmup = True
         
         # Process comma-separated LoRA paths and scales
         if lora_paths:
@@ -275,11 +276,17 @@ def launch(model_path, model_type, context_length, port, host, max_concurrency, 
         # Display startup information
         print_startup_banner(args)
         
-        # Set up and start the server
-        config = asyncio.run(setup_server(args))
+        # Same startup path as `python -m app.main`.
+        application = create_app(args)
         logger.info("Server configuration complete.")
         logger.info("Starting Uvicorn server...")
-        uvicorn.Server(config).run()
+        uvicorn.run(
+            application,
+            host=args.host,
+            port=args.port,
+            log_level="info",
+            access_log=True,
+        )
     except KeyboardInterrupt:
         logger.info("Server shutdown requested by user. Exiting...")
     except Exception as e:
